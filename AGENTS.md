@@ -145,3 +145,16 @@ git checkout -b add/new-op
 - Describe what the change does and why
 - Keep it concise
 
+---
+
+## Op Coverage
+
+See `support_map.md` for the full picture:
+- First table: all ops with their current support status (✓ / E / -)
+- Second table: official ONNX ops not yet supported at all
+
+**Every agent that adds support for a new op must update `support_map.md` as part of the same change:**
+- Move the op from the second table to the first table (or add it if absent from both)
+- Mark it ✓ in the first table
+- This is not optional — a PR that adds an op without updating `support_map.md` is incomplete
+
