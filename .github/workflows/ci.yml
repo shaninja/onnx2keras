@@ -62,6 +62,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v2
+      - name: Load CI environment
+        run: cat .github/workflows/ci.env >> "$GITHUB_ENV"
       - name: Set up python
         id: setup-python
         uses: actions/setup-python@v2
@@ -81,6 +83,7 @@ jobs:
           path: .venv
           key: ${{ needs.python-setup.outputs.cache_key }}
       - name: Configure AWS Credentials
+        if: env.RUN_PRIVATE_TESTS == '1' && matrix.pytest_target == 'models'
         uses: aws-actions/configure-aws-credentials@v4.0.1
         with:
           role-to-assume: arn:aws:iam::898022457080:role/github-action-test-s3-access-role
@@ -88,4 +91,9 @@ jobs:
       - name: Test with pytest
         run: |
           source .venv/bin/activate
-          pytest test/${{ matrix.pytest_target }}/
+          PYTEST_TARGET="test/${{ matrix.pytest_target }}/"
+          if [ "${{ matrix.pytest_target }}" = "models" ] && [ "$RUN_PRIVATE_TESTS" != "1" ]; then
+            pytest "$PYTEST_TARGET" --ignore=test/models/private_tests
+          else
+            pytest "$PYTEST_TARGET"
+          fi
