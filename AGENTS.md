@@ -147,6 +147,62 @@ git checkout -b add/new-op
 
 ---
 
+## Project Memory Policy
+
+- If the user asks to "remember", "save", or "keep" something that is specific to this repo, add it to this file.
+- Prefer storing project workflow, review norms, testing conventions, fork/PR rules, and recurring gotchas here instead of only in tool-local memory.
+- Keep additions short and operational. This file should help future agents act correctly, not serve as a full changelog.
+
+---
+
+## Code Review Workflow
+
+When the user asks for a review, default to a multi-agent review and then consolidate the results into one final review.
+
+### Review output style
+
+- Findings first, ordered by severity
+- Then open questions / assumptions if needed
+- Then a short verdict
+- If there are no findings, say so explicitly
+
+### Standing review personas
+
+Launch these reviewers in parallel:
+
+1. **Correctness reviewer**
+   - Focus: semantic correctness, parity with similar converters, realistic edge cases, test adequacy, regressions
+   - Constraints:
+     - Do not ask for redesigns unless required for correctness
+     - Treat pre-existing limitations as out of scope unless the patch makes them worse
+
+2. **Maintainability reviewer**
+   - Focus: consistency with local converter/test patterns, future extension cost, duplication drift risk, naming/comments, repo fit
+   - Constraints:
+     - Prefer local consistency over idealized design
+     - Do not push broad refactors unless the patch creates real maintenance risk
+
+3. **Scope-and-regression reviewer**
+   - Focus: whether the patch is narrowly scoped, avoids unintended behavior changes, and does not introduce unnecessary coupling
+   - Constraints:
+     - Be strict about scope creep
+     - Do not ask for unrelated improvements
+
+4. **Edge-cases reviewer**
+   - Focus: boundary conditions, dtype/shape/empty/singleton cases, constant-vs-dynamic behavior, happy-path-only tests
+   - Constraints:
+     - Focus on realistic edge cases for this repo and the specific patch
+     - Do not ask for speculative hardening unless there is concrete risk
+
+### Review principles for this repo
+
+- Minimize changes to existing code
+- Assume existing code and tests are valid unless the new patch directly conflicts with them
+- Prefer extending the library in the same style rather than refactoring toward a cleaner architecture
+- Treat dynamic dtype/input limitations and similar known repo-wide constraints as out of scope unless the patch worsens them
+
+---
+
 ## Op Coverage
 
 See `support_map.md` for the full picture:
@@ -157,4 +213,3 @@ See `support_map.md` for the full picture:
 - Move the op from the second table to the first table (or add it if absent from both)
 - Mark it ✓ in the first table
 - This is not optional — a PR that adds an op without updating `support_map.md` is incomplete
-
