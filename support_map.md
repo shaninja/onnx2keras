@@ -27,7 +27,7 @@ Legend:
 |BitwiseXor|                   :heavy_check_mark:|
 |BlackmanWindow|               -|
 |Cast|                         :heavy_check_mark:|
-|CastLike|                     -|
+|CastLike|                     :heavy_check_mark:|
 |Ceil|                         :heavy_check_mark:|
 |Celu|                         E|
 |CenterCropPad|                E|
