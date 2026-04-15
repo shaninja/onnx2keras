@@ -131,7 +131,11 @@ git checkout -b add/new-op
 ### PR / merge policy
 - PRs target `shaninja/master` (NOT tensorleap) — always verify base repo before submitting
 - When PRing within own fork: navigate to `github.com/shaninja/onnx2keras` directly — the GitHub banner after a push defaults to the upstream repo and will open a PR there by mistake
-- **CI will always fail on the fork** — the CI workflow uses an AWS IAM role that belongs to tensorleap. Ignore the red CI mark. Run tests locally instead.
+- Fork CI does not have access to tensorleap's AWS role for private S3-backed tests.
+- The fork's CI uses [`.github/workflows/ci.env`](./.github/workflows/ci.env) to control this:
+  - `RUN_PRIVATE_TESTS=0` means skip `test/models/private_tests` and do not configure AWS credentials
+  - `RUN_PRIVATE_TESTS=1` means run the private-model path and configure AWS credentials
+- Default fork behavior should keep `RUN_PRIVATE_TESTS=0` so public CI remains usable.
 
 ### When eventually contributing back to tensorleap
 - Cherry-pick op commits only
