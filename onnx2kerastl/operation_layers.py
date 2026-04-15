@@ -444,6 +444,44 @@ def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
         layers[node_name] = target_layer(input_0)
 
 
+def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
+    """
+    Convert CastLike layer — casts input to the dtype of the target tensor
+    :param node: current operation node
+    :param params: operation attributes
+    :param layers: available keras layers
+    :param lambda_func: function for keras Lambda layer
+    :param node_name: internal converter name
+    :param keras_name: resulting layer name
+    :return: None
+    """
+    logger = logging.getLogger('onnx2keras.cast_like')
+
+    input_0 = layers[node.input[0]]
+    target = layers[node.input[1]]
+
+    if is_numpy(target):
+        target_dtype = tf.as_dtype(target.dtype)
+    else:
+        target = ensure_tf_type(target, name="%s_target_const" % keras_name)
+        target_dtype = target.dtype
+
+    logger.debug('CastLike: casting to dtype %s', target_dtype)
+
+    if is_numpy(input_0):
+        layers[node_name] = input_0.astype(target_dtype.as_numpy_dtype)
+    else:
+        input_0 = ensure_tf_type(input_0, name="%s_const" % keras_name)
+        if input_0.dtype == target_dtype and not isinstance(input_0, (tf.Tensor, np.ndarray)):
+            # casting a tensor to the same dtype creates a placeholder:0 tensor which does not process well in engine
+            # (same workaround as convert_cast)
+            if input_0.dtype != tf.double:
+                input_0 = tf_cast(input_0, tf.double, tf_name=f"{params['cleaned_name']}_precast")
+            else:
+                raise NotImplementedError("CastLike does not support tf.double casting into itself")
+        layers[node_name] = tf_cast(input_0, target_dtype, tf_name=f"{params['cleaned_name']}_cast_like")
+
+
 def convert_floor(node, params, layers, lambda_func, node_name, keras_name):
     """
     Convert Floor layer

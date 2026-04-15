@@ -4,7 +4,7 @@ from .activation_layers import convert_relu, convert_elu, convert_lrelu, convert
     convert_soft_sign, convert_mish, convert_gelu, convert_hard_swish
 from .ltsm_layers import convert_lstm, convert_gru
 from .operation_layers import convert_clip, convert_exp, convert_neg, convert_reduce_sum, convert_reduce_mean, \
-    convert_log, convert_pow, convert_sqrt, convert_split, convert_cast, convert_floor, convert_identity, \
+    convert_log, convert_pow, convert_sqrt, convert_split, convert_cast, convert_cast_like, convert_floor, convert_identity, \
     convert_argmax, convert_reduce_l2, convert_reduce_max, convert_reciprocal, convert_abs, convert_not, convert_cosine, \
     convert_less, convert_less_equal, convert_and, convert_greater, convert_greater_equal, convert_xor, convert_or, \
     convert_trilu, convert_sign, convert_cosh, convert_sin, convert_sinh, convert_ceil, convert_acosh, convert_acos, \
@@ -60,6 +60,7 @@ AVAILABLE_CONVERTERS = {
     'Sqrt': convert_sqrt,
     'Split': convert_split,
     'Cast': convert_cast,
+    'CastLike': convert_cast_like,
     'Floor': convert_floor,
     'Identity': convert_identity,
     'ArgMax': convert_argmax,
