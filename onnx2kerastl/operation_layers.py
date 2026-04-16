@@ -434,30 +434,47 @@ def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
         )
 
 
-# tf.strings.to_number only accepts these out_type values; all others need a
-# two-step cast (parse to an intermediate supported type, then tf.cast to target).
-_TF_STR_TO_NUM_NATIVE = frozenset([tf.float32, tf.float64, tf.int32, tf.int64])
-_TF_STR_TO_NUM_VIA = {
-    tf.bool:    tf.int32,
-    tf.int8:    tf.int32,
-    tf.int16:   tf.int32,
-    tf.uint8:   tf.int32,
-    tf.uint16:  tf.int32,
-    tf.uint32:  tf.int64,
-    tf.uint64:  tf.int64,
-    tf.float16: tf.float32,
-}
-
-
 def _string_to_number_tensor(x, target_dtype):
-    if target_dtype in _TF_STR_TO_NUM_NATIVE:
+    """Cast a tf.string tensor to a numeric target_dtype.
+
+    tf.strings.to_number only supports out_type in {float32, float64, int32,
+    int64} and rejects decimal strings for integer out_types.  ONNX Runtime
+    accepts decimal strings for all numeric targets and truncates toward zero
+    when casting to integers, so every non-float target is parsed as float64
+    and then tf.cast to the final dtype.  Values outside float64's exact-integer
+    range (|n| > 2**53) lose precision, which is an accepted limitation shared
+    with any float-based string→int parse.
+    """
+    if target_dtype in (tf.float32, tf.float64):
         return tf.strings.to_number(x, out_type=target_dtype)
-    via = _TF_STR_TO_NUM_VIA.get(target_dtype)
-    if via is None:
-        raise NotImplementedError(
-            f"CastLike: string to {target_dtype} is not supported by this converter"
-        )
-    return tf.cast(tf.strings.to_number(x, out_type=via), target_dtype)
+    if target_dtype in (tf.float16, tf.bfloat16):
+        return tf.cast(tf.strings.to_number(x, out_type=tf.float32), target_dtype)
+    if target_dtype == tf.bool:
+        # Match ORT, which parses strings for bool via std::stoull: decimals like
+        # "0.5" become 0 (and thus False), not True.  Route through int64 cast so
+        # "0.5" truncates to 0 before the != 0 check.
+        as_int = tf.cast(tf.strings.to_number(x, out_type=tf.float64), tf.int64)
+        return tf.not_equal(as_int, tf.constant(0, dtype=tf.int64))
+    if target_dtype.is_integer:
+        return tf.cast(tf.strings.to_number(x, out_type=tf.float64), target_dtype)
+    raise NotImplementedError(
+        f"CastLike: string to {target_dtype} is not supported by this converter"
+    )
+
+
+def _numpy_string_to_numeric(arr, target_dtype):
+    """NumPy string→numeric parse matching ORT: decimal strings are accepted
+    for integer targets, and bool uses numeric-nonzero semantics (not NumPy
+    truthiness, which would make any non-empty string True)."""
+    np_dtype = target_dtype.as_numpy_dtype
+    if target_dtype == tf.bool:
+        # Match the tensor path / ORT: truncate toward zero then compare to 0.
+        return arr.astype(np.float64).astype(np.int64) != 0
+    if target_dtype.is_integer:
+        return arr.astype(np.float64).astype(np_dtype)
+    if target_dtype in (tf.float16, tf.bfloat16):
+        return arr.astype(np.float32).astype(np_dtype)
+    return arr.astype(np_dtype)
 
 
 def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
@@ -485,8 +502,14 @@ def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
     logger.debug('CastLike: casting to dtype %s', target_dtype)
 
     if is_numpy(input_0):
+        input_is_string = input_0.dtype.kind in ('O', 'U', 'S')
         if target_dtype == tf.string:
-            layers[node_name] = input_0.astype(str).astype(object)
+            if input_is_string:
+                layers[node_name] = input_0
+            else:
+                layers[node_name] = input_0.astype(str).astype(object)
+        elif input_is_string:
+            layers[node_name] = _numpy_string_to_numeric(input_0, target_dtype)
         else:
             layers[node_name] = input_0.astype(target_dtype.as_numpy_dtype)
     else:

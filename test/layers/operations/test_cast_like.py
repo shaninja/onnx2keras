@@ -225,6 +225,147 @@ def test_cast_like_string_to_narrow_int(target_type, target_np_dtype, onnx_targe
         f"Value mismatch: ort={ort_output}, keras={keras_output}"
 
 
+def test_cast_like_string_decimal_to_int():
+    """ORT accepts decimal strings for integer casts and truncates toward zero.
+    Exercises the float64-intermediate path in _string_to_number_tensor."""
+    str_vals = np.array([['100.5', '2.718'], ['-1.9', '42']], dtype=object)
+    target_np = np.array([0], dtype=np.int32)
+
+    input_init  = numpy_helper.from_array(str_vals, name="input")
+    target_init = numpy_helper.from_array(target_np, name="target")
+
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-str-decimal-to-int",
+        inputs=[helper.make_tensor_value_info("input", ONNX_STRING, [2, 2])],
+        outputs=[helper.make_tensor_value_info("output", TensorProto.INT32, [2, 2])],
+        initializer=[input_init, target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": str_vals})[0]
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.string]).converted_model
+    keras_output = np.array(keras_model(str_vals))
+
+    assert keras_output.dtype == np.int32
+    assert np.array_equal(ort_output, keras_output), \
+        f"Value mismatch: ort={ort_output}, keras={keras_output}"
+
+
+def test_cast_like_string_to_bool():
+    """String→bool: must match ORT's int-truncation semantics (e.g. '0.5' → False)."""
+    str_vals = np.array([['0', '1'], ['0.5', '2']], dtype=object)
+    target_np = np.array([False], dtype=np.bool_)
+
+    input_init  = numpy_helper.from_array(str_vals, name="input")
+    target_init = numpy_helper.from_array(target_np, name="target")
+
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-str-to-bool",
+        inputs=[helper.make_tensor_value_info("input", ONNX_STRING, [2, 2])],
+        outputs=[helper.make_tensor_value_info("output", TensorProto.BOOL, [2, 2])],
+        initializer=[input_init, target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": str_vals})[0]
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.string]).converted_model
+    keras_output = np.array(keras_model(str_vals))
+
+    assert keras_output.dtype == np.bool_
+    assert np.array_equal(ort_output, keras_output), \
+        f"Value mismatch: ort={ort_output}, keras={keras_output}"
+
+
+@pytest.mark.parametrize("target_type", [
+    TensorProto.FLOAT16,
+    TensorProto.BFLOAT16,
+    TensorProto.UINT64,
+])
+def test_cast_like_string_to_extra_numeric(target_type):
+    """Exercises the remaining opset-15 numeric targets: float16, bfloat16, uint64.
+    ORT cannot return bfloat16/uint64 cleanly as numpy, so the graph casts the
+    CastLike output to float32 before returning; that is enough to validate the
+    CastLike branch itself."""
+    str_vals = np.array([['1.5', '2.5'], ['10', '100']], dtype=object)
+
+    if target_type == TensorProto.BFLOAT16:
+        target_init = helper.make_tensor("target", TensorProto.BFLOAT16, [1], [0])
+    elif target_type == TensorProto.FLOAT16:
+        target_init = numpy_helper.from_array(np.array([0], dtype=np.float16), name="target")
+    else:  # UINT64
+        target_init = numpy_helper.from_array(np.array([0], dtype=np.uint64), name="target")
+
+    input_init = numpy_helper.from_array(str_vals, name="input")
+
+    cast_like = helper.make_node("CastLike", inputs=["input", "target"], outputs=["cast_out"])
+    # Cast back to float32 so ORT can return the value to Python
+    tail = helper.make_node("Cast", inputs=["cast_out"], outputs=["output"],
+                            to=TensorProto.FLOAT)
+
+    graph = helper.make_graph(
+        [cast_like, tail], "test-castlike-str-extra",
+        inputs=[helper.make_tensor_value_info("input", ONNX_STRING, [2, 2])],
+        outputs=[helper.make_tensor_value_info("output", TensorProto.FLOAT, [2, 2])],
+        initializer=[input_init, target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": str_vals})[0]
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.string]).converted_model
+    keras_output = np.array(keras_model(str_vals))
+
+    # float16/bfloat16 lose precision (atol 0.1 covers bfloat16's ~1% error);
+    # uint64 has full integer precision so the same tolerance is safe.
+    atol = 0.1 if target_type == TensorProto.BFLOAT16 else 1e-3
+    assert np.allclose(ort_output, keras_output, atol=atol), \
+        f"Value mismatch ({target_type}): ort={ort_output}, keras={keras_output}"
+
+
+def test_cast_like_live_string_target():
+    """Target is a live tf.string graph input — exercises the non-numpy target path
+    when the inferred dtype is tf.string."""
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-live-str-target",
+        inputs=[
+            helper.make_tensor_value_info("input",  TensorProto.FLOAT, [2, 3]),
+            helper.make_tensor_value_info("target", ONNX_STRING,       [1]),
+        ],
+        outputs=[helper.make_tensor_value_info("output", ONNX_STRING, [2, 3])],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    input_np  = np.array([[1.0, 2.5, 3.0], [4.0, 5.5, 6.0]], dtype=np.float32)
+    target_np = np.array([b''], dtype=object)
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": input_np, "target": target_np})[0]
+
+    keras_model = onnx_to_keras(
+        onnx_model, ["input", "target"],
+        input_types=[tf.float32, tf.string],
+    ).converted_model
+    keras_output = keras_model([input_np, target_np]).numpy()
+
+    assert ort_output.shape == keras_output.shape
+    for ort_val, keras_val in zip(ort_output.flat, keras_output.flat):
+        ort_f   = float(ort_val.decode()   if isinstance(ort_val, bytes)   else ort_val)
+        keras_f = float(keras_val.decode() if isinstance(keras_val, bytes) else keras_val)
+        assert np.isclose(ort_f, keras_f, atol=1e-5), \
+            f"Value mismatch: ort={ort_f}, keras={keras_f}"
+
+
 def test_cast_like_string_to_string():
     """String tensor cast to string (same-dtype no-op) — exercises tf.identity path."""
     str_vals = np.array([['hello', 'world'], ['foo', 'bar']], dtype=object)
