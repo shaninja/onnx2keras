@@ -53,7 +53,9 @@ def make_cast_like_model(input_type, target_type, target_np):
     (TensorProto.DOUBLE, TensorProto.FLOAT),   # float64 → float32
     (TensorProto.INT32,  TensorProto.FLOAT),   # int32   → float32
     (TensorProto.INT64,  TensorProto.FLOAT),   # int64   → float32
-    (TensorProto.FLOAT,  TensorProto.FLOAT),   # float32 → float32 (same dtype, the tricky case)
+    (TensorProto.FLOAT,  TensorProto.FLOAT),   # float32 → float32 (same dtype)
+    (TensorProto.INT64,  TensorProto.INT64),   # int64   → int64   (same dtype, previously corrupted by float64 upcast)
+    (TensorProto.DOUBLE, TensorProto.DOUBLE),  # float64 → float64 (same dtype, previously raised)
 ])
 def test_cast_like(input_type, target_type):
     input_dtype  = ONNX_TO_NP[input_type]
