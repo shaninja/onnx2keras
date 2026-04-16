@@ -9,11 +9,12 @@ Keep it up to date whenever you learn something non-obvious about the project.
 
 Make the library complete — able to convert any ONNX model to Keras without failure.
 
-For **new-op branches** (`add/op-name`), the bar is **full support for that op before the branch is considered done**.
-- Do not stop at partial numeric/common-case support if the ONNX op has additional valid modes or dtypes.
-- Coding and review are not complete until the branch reaches the repo's intended end-state for that op.
+For **new-op branches** (`add/op-name`), the bar is: reach the **same practical support level as the existing ops inherited from upstream that are already treated as supported in this repo**.
+- Do not merge a new-op branch in an obviously more incomplete state than the repo's existing supported ops.
+- Coding and review are not complete until the op reaches the repo's intended end-state for this fork.
 - By the time the branch is pushed and merged to `master`, that op should be marked `:heavy_check_mark:` in `support_map.md`.
-- Do not assume "we can come back later" for the same op. The expectation is to finish the op on its add-branch.
+- Do not assume "we can come back later" for the same op. The expectation is to finish the op on its add-branch to the repo's current support bar.
+- Reviewers should not require a new op to exceed the practical support standard already accepted for comparable upstream ops unless the user explicitly asks for that higher bar.
 
 **Two tracks of work:**
 1. **Missing ops** — ONNX ops not yet in `AVAILABLE_CONVERTERS`. Fix = write a converter + register it.
