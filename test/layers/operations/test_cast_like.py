@@ -332,6 +332,58 @@ def test_cast_like_string_to_extra_numeric(target_type):
         f"Value mismatch ({target_type}): ort={ort_output}, keras={keras_output}"
 
 
+@pytest.mark.parametrize("target_type,np_dtype,values", [
+    (TensorProto.UINT64, np.uint64, [
+        # 2^53 + 1 — float64 would round to 2^53, losing the +1
+        '9007199254740993',
+        # 2^60 + 1 — another float64-imprecise value
+        '1152921504606846977',
+        # max uint64 — outside int64 range entirely
+        '18446744073709551615',
+        '0',
+    ]),
+    (TensorProto.INT64, np.int64, [
+        '9007199254740993',       # 2^53 + 1
+        '-9007199254740993',      # negative above-2^53
+        '4611686018427387903',    # 2^62 - 1
+        '9223372036854775807',    # max int64
+    ]),
+])
+def test_cast_like_string_to_wide_int_precision(target_type, np_dtype, values):
+    """Pins the full legal integer range: values above 2^53 must parse exactly,
+    which float64 parsing cannot do.  Exercises the tf.numpy_function
+    Python-int path for int64 and uint64."""
+    str_vals = np.array(values, dtype=object).reshape(2, 2)
+    target_np = np.array([0], dtype=np_dtype)
+    expected = np.array([int(v) for v in values], dtype=np_dtype).reshape(2, 2)
+
+    input_init  = numpy_helper.from_array(str_vals, name="input")
+    target_init = numpy_helper.from_array(target_np, name="target")
+
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-wide-int",
+        inputs=[helper.make_tensor_value_info("input", ONNX_STRING, [2, 2])],
+        outputs=[helper.make_tensor_value_info("output", target_type, [2, 2])],
+        initializer=[input_init, target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": str_vals})[0]
+    assert np.array_equal(ort_output, expected), \
+        f"ORT disagrees with expected: ort={ort_output}, expected={expected}"
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.string]).converted_model
+    keras_output = np.array(keras_model(str_vals))
+
+    assert keras_output.dtype == np_dtype, \
+        f"Dtype mismatch: expected {np_dtype}, got {keras_output.dtype}"
+    assert np.array_equal(keras_output, expected), \
+        f"Value mismatch: keras={keras_output}, expected={expected}"
+
+
 def test_cast_like_live_string_target():
     """Target is a live tf.string graph input — exercises the non-numpy target path
     when the inferred dtype is tf.string."""
