@@ -54,8 +54,9 @@ def test_f_softmax(change_ordering, dim):
 
 
 def test_softmax_high_rank():
-    """Softmax on rank-6 input: keras.layers.Softmax is limited to rank<=5 and would crash."""
-    shape = [1, 2, 3, 4, 5, 6]
+    """Softmax on rank-7 input: keras.layers.Softmax and tf.nn.softmax both delegate to the
+    TF Softmax op which is limited to rank<=5 in TF 2.12. Shape matches the RAFT regression."""
+    shape = [1, 1, 9, 8, 8, 55, 128]
     node = helper.make_node("Softmax", inputs=["x"], outputs=["y"], axis=-1)
     graph = helper.make_graph(
         [node], "test-softmax-6d",
