@@ -137,6 +137,10 @@ git checkout -b add/new-op
   - `RUN_PRIVATE_TESTS=1` means run the private-model path and configure AWS credentials
 - Default fork behavior should keep `RUN_PRIVATE_TESTS=0` so public CI remains usable.
 
+### Push policy during review cycles
+- Commit after each fix, but **do not push until all review cycles are done**.
+- Only push once the branch is review-clean and ready to merge.
+
 ### When eventually contributing back to tensorleap
 - Cherry-pick op commits only
 - Exclude `.github/` infra changes
