@@ -185,3 +185,71 @@ def test_cast_like_numeric_to_string():
         keras_f = float(keras_val.decode() if isinstance(keras_val, bytes) else keras_val)
         assert np.isclose(ort_f, keras_f, atol=1e-5), \
             f"Numeric mismatch after string parse: orig={orig}, ort={ort_f}, keras={keras_f}"
+
+
+# tf.strings.to_number only supports {float32, float64, int32, int64} natively;
+# all other numeric target types require an intermediate cast.  Test the most
+# representative ones: int8 (via int32), uint8 (via int32), uint32 (via int64).
+@pytest.mark.parametrize("target_type,target_np_dtype,onnx_target_type", [
+    (TensorProto.INT8,   np.int8,   TensorProto.INT8),
+    (TensorProto.UINT8,  np.uint8,  TensorProto.UINT8),
+    (TensorProto.UINT32, np.uint32, TensorProto.UINT32),
+])
+def test_cast_like_string_to_narrow_int(target_type, target_np_dtype, onnx_target_type):
+    """String→narrow-int tensor path exercises _string_to_number_tensor intermediate cast."""
+    str_vals = np.array([['1', '2'], ['3', '4']], dtype=object)
+    target_np = np.array([0], dtype=target_np_dtype)
+
+    input_init  = numpy_helper.from_array(str_vals, name="input")
+    target_init = numpy_helper.from_array(target_np, name="target")
+
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-str-narrow",
+        inputs=[helper.make_tensor_value_info("input", ONNX_STRING, [2, 2])],
+        outputs=[helper.make_tensor_value_info("output", target_type, [2, 2])],
+        initializer=[input_init, target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": str_vals})[0]
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.string]).converted_model
+    keras_output = np.array(keras_model(str_vals))
+
+    assert keras_output.dtype == target_np_dtype, \
+        f"Dtype mismatch: expected {target_np_dtype}, got {keras_output.dtype}"
+    assert np.array_equal(ort_output, keras_output), \
+        f"Value mismatch: ort={ort_output}, keras={keras_output}"
+
+
+def test_cast_like_string_to_string():
+    """String tensor cast to string (same-dtype no-op) — exercises tf.identity path."""
+    str_vals = np.array([['hello', 'world'], ['foo', 'bar']], dtype=object)
+    target_np = np.array([b''], dtype=object)
+
+    input_init  = numpy_helper.from_array(str_vals, name="input")
+    target_init = numpy_helper.from_array(target_np, name="target")
+
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-str-to-str",
+        inputs=[helper.make_tensor_value_info("input", ONNX_STRING, [2, 2])],
+        outputs=[helper.make_tensor_value_info("output", ONNX_STRING, [2, 2])],
+        initializer=[input_init, target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": str_vals})[0]
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.string]).converted_model
+    keras_output = keras_model(str_vals).numpy()
+
+    for ort_val, keras_val in zip(ort_output.flat, keras_output.flat):
+        ort_s   = ort_val.decode()   if isinstance(ort_val, bytes)   else str(ort_val)
+        keras_s = keras_val.decode() if isinstance(keras_val, bytes) else str(keras_val)
+        assert ort_s == keras_s, f"String mismatch: ort={ort_s!r}, keras={keras_s!r}"

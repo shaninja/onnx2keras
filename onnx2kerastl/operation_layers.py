@@ -434,6 +434,32 @@ def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
         )
 
 
+# tf.strings.to_number only accepts these out_type values; all others need a
+# two-step cast (parse to an intermediate supported type, then tf.cast to target).
+_TF_STR_TO_NUM_NATIVE = frozenset([tf.float32, tf.float64, tf.int32, tf.int64])
+_TF_STR_TO_NUM_VIA = {
+    tf.bool:    tf.int32,
+    tf.int8:    tf.int32,
+    tf.int16:   tf.int32,
+    tf.uint8:   tf.int32,
+    tf.uint16:  tf.int32,
+    tf.uint32:  tf.int64,
+    tf.uint64:  tf.int64,
+    tf.float16: tf.float32,
+}
+
+
+def _string_to_number_tensor(x, target_dtype):
+    if target_dtype in _TF_STR_TO_NUM_NATIVE:
+        return tf.strings.to_number(x, out_type=target_dtype)
+    via = _TF_STR_TO_NUM_VIA.get(target_dtype)
+    if via is None:
+        raise NotImplementedError(
+            f"CastLike: string to {target_dtype} is not supported by this converter"
+        )
+    return tf.cast(tf.strings.to_number(x, out_type=via), target_dtype)
+
+
 def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
     """
     Convert CastLike layer — casts input to the dtype of the target tensor
@@ -471,7 +497,7 @@ def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
             else:
                 layers[node_name] = tf.strings.as_string(input_0)
         elif input_0.dtype == tf.string:
-            layers[node_name] = tf.strings.to_number(input_0, out_type=target_dtype)
+            layers[node_name] = _string_to_number_tensor(input_0, target_dtype)
         else:
             layers[node_name] = _cast_symbolic_tensor(
                 input_0, target_dtype, f"{params['cleaned_name']}_cast_like"
