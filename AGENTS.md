@@ -9,6 +9,12 @@ Keep it up to date whenever you learn something non-obvious about the project.
 
 Make the library complete — able to convert any ONNX model to Keras without failure.
 
+For **new-op branches** (`add/op-name`), the bar is **full support for that op before the branch is considered done**.
+- Do not stop at partial numeric/common-case support if the ONNX op has additional valid modes or dtypes.
+- Coding and review are not complete until the branch reaches the repo's intended end-state for that op.
+- By the time the branch is pushed and merged to `master`, that op should be marked `:heavy_check_mark:` in `support_map.md`.
+- Do not assume "we can come back later" for the same op. The expectation is to finish the op on its add-branch.
+
 **Two tracks of work:**
 1. **Missing ops** — ONNX ops not yet in `AVAILABLE_CONVERTERS`. Fix = write a converter + register it.
 2. **Incorrect converters** — Ops that exist but silently produce wrong output for certain inputs. Fix = run real-world ONNX models, compare numerically between ONNX Runtime and Keras, diagnose mismatches.
@@ -93,23 +99,61 @@ def convert_foo(node, params, layers, lambda_func, node_name, keras_name):
 ## Known Gotchas
 
 ### Same-dtype cast creates a broken `placeholder:0` tensor
-When casting a tensor to its own existing dtype (no-op cast), Keras creates a `placeholder:0` tensor that breaks the engine. Workaround: up-cast to `float64` first, then cast to target dtype. Example from `convert_cast`:
+When casting a **Keras symbolic tensor** to its own existing dtype (no-op cast), `tf.cast(x, x.dtype)` can create a broken `placeholder:0` tensor that breaks the engine.
+
+Do **not** work around this by up-casting through `float64`:
+- it corrupts `int64 -> int64` values above `2^53`
+- it breaks `float64 -> float64`
+
+Correct workaround: use `tf.identity` for same-dtype symbolic casts, and only call `tf_cast` when the dtype actually changes. See `_cast_symbolic_tensor` in `operation_layers.py`.
+
+Example:
 
 ```python
-if input_0.dtype == dtype and not isinstance(input_0, (tf.Tensor, np.ndarray)):
-    if input_0.dtype != tf.double:
-        input_0 = tf_cast(input_0, tf.double, tf_name=f"{params['cleaned_name']}_precast")
-    else:
-        raise NotImplementedError("Cast does not support tf.double casting into itself")
+if not isinstance(input_0, (tf.Tensor, np.ndarray)) and input_0.dtype == target_dtype:
+    return tf.identity(input_0)
+return tf_cast(input_0, target_dtype, tf_name=tf_name)
 ```
 
 Apply the same pattern in any new cast-like converter.
 
 ### Dynamic input dtype defaults to float32
-When calling `onnx_to_keras(model, input_names)` without `input_types`, integer-typed inputs get treated as float32. In tests: if a node input needs a non-float type, make it an ONNX **initializer** (constant), not a graph input. See `test_cast_like.py` for an example.
+When calling `onnx_to_keras(model, input_names)` without `input_types`, integer-typed inputs get treated as float32.
+
+In tests, if a graph input needs a non-float type:
+- prefer passing `input_types=[...]` explicitly
+- or make that value an ONNX initializer when constant behavior is enough
+
+Do not assume ONNX input dtype declarations alone will exercise the intended converter path. See `test_cast_like.py`.
 
 ### Integer inputs in tests
 When building ONNX test models with `onnx.helper`, use `numpy_helper.from_array(np_array, name="...")` to create initializers for constant tensors that must have a specific dtype.
+
+### High-rank Softmax is broken in TF 2.12
+`keras.layers.Softmax` and `tf.nn.softmax` both hit the TensorFlow Softmax kernel, which is limited to rank `<= 5` in TF 2.12.
+
+For tensors with rank `> 5`, implement Softmax manually using the stable form:
+
+```python
+x_max = tf.reduce_max(x, axis=ax, keepdims=True)
+e_x = tf.exp(x - x_max)
+return e_x / tf.reduce_sum(e_x, axis=ax, keepdims=True)
+```
+
+When adding regression tests for this path:
+- use a shape that actually hits the high-rank branch
+- test more than one axis, not only `-1`
+- prefer a direct ONNX test over a large model download when possible
+
+### `support_map.md` policy in this fork
+`E` is legacy state inherited from upstream for ops that were already partial before work reached this fork.
+
+For work done in this fork:
+- do not add new `E` entries
+- do not downgrade a newly added op to `E`
+- new-op branches are only complete when the op can be marked `:heavy_check_mark:`
+
+If an op cannot reach full support in the current branch, the branch is not done yet.
 
 ---
 
