@@ -364,18 +364,19 @@ def convert_split(node, params, layers, lambda_func, node_name, keras_names):
         cur += split
 
 
-def _same_dtype_precast(input_0, target_dtype, cleaned_name):
+def _cast_symbolic_tensor(input_0, target_dtype, tf_name):
     """
-    When casting a Keras symbolic tensor to its own dtype, TF creates a broken
-    placeholder:0 tensor. Work around by up-casting to float64 first, so the
-    subsequent cast is never a no-op.  Raises if the tensor is already float64.
+    Cast a Keras symbolic tensor to target_dtype.
+
+    tf.cast(x, x.dtype) on a Keras symbolic tensor creates a broken placeholder:0 node
+    that the engine cannot process.  When the dtypes already match, use tf.identity
+    instead — it is semantically correct (ONNX defines same-dtype cast as a no-op) and
+    works for all dtypes including int64 and float64, which the previous float64-upcast
+    workaround corrupted or rejected.
     """
-    if input_0.dtype == target_dtype and not isinstance(input_0, (tf.Tensor, np.ndarray)):
-        if input_0.dtype != tf.double:
-            input_0 = tf_cast(input_0, tf.double, tf_name=f"{cleaned_name}_precast")
-        else:
-            raise NotImplementedError("Cast does not support tf.double casting into itself")
-    return input_0
+    if not isinstance(input_0, (tf.Tensor, np.ndarray)) and input_0.dtype == target_dtype:
+        return tf.identity(input_0)
+    return tf_cast(input_0, target_dtype, tf_name=tf_name)
 
 
 def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
@@ -428,24 +429,9 @@ def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
             10: tf.float16,
             11: tf.double,
         }
-        input_0 = _same_dtype_precast(input_0, check_cast_map[params['to']], params['cleaned_name'])
-
-        def target_layer(x, dtype=params['to'], k_name=f"{params['cleaned_name']}"):
-            import tensorflow as tf
-            cast_map = {
-                1: tf.float32,
-                2: tf.uint8,
-                3: tf.int8,
-                5: tf.int16,
-                6: tf.int32,
-                7: tf.int64,
-                9: tf.bool,
-                10: tf.float16,
-                11: tf.double,
-            }
-            return tf_cast(x, cast_map[dtype], tf_name=f'{k_name}_cast')
-
-        layers[node_name] = target_layer(input_0)
+        layers[node_name] = _cast_symbolic_tensor(
+            input_0, check_cast_map[params['to']], f"{params['cleaned_name']}_cast"
+        )
 
 
 def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
@@ -476,8 +462,9 @@ def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
         layers[node_name] = input_0.astype(target_dtype.as_numpy_dtype)
     else:
         input_0 = ensure_tf_type(input_0, name="%s_const" % keras_name)
-        input_0 = _same_dtype_precast(input_0, target_dtype, params['cleaned_name'])
-        layers[node_name] = tf_cast(input_0, target_dtype, tf_name=f"{params['cleaned_name']}_cast_like")
+        layers[node_name] = _cast_symbolic_tensor(
+            input_0, target_dtype, f"{params['cleaned_name']}_cast_like"
+        )
 
 
 def convert_floor(node, params, layers, lambda_func, node_name, keras_name):

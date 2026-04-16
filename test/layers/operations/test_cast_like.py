@@ -79,3 +79,39 @@ def test_cast_like(input_type, target_type):
     # Output dtype must match the target dtype, not the input dtype
     assert keras_output.dtype == target_dtype, \
         f"Dtype mismatch: expected {target_dtype}, got {keras_output.dtype}"
+
+
+def test_cast_like_dynamic_target():
+    """
+    Exercise the dynamic-target code path: target is a graph input (live tensor),
+    not an initializer, so the converter must call ensure_tf_type(target, ...) and
+    read the dtype from the resulting TF tensor rather than from a numpy array.
+    """
+    # Graph: float32 input + float64 target (both dynamic) → CastLike → float64 output
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-cast-like-dynamic-target",
+        inputs=[
+            helper.make_tensor_value_info("input",  TensorProto.FLOAT,  [2, 3]),
+            helper.make_tensor_value_info("target", TensorProto.DOUBLE, [1]),
+        ],
+        outputs=[helper.make_tensor_value_info("output", TensorProto.DOUBLE, [2, 3])],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    input_np  = np.random.uniform(0, 10, (2, 3)).astype(np.float32)
+    target_np = np.array([0.0], dtype=np.float64)
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": input_np, "target": target_np})[0]
+
+    keras_model = onnx_to_keras(
+        onnx_model, ["input", "target"],
+        input_types=[tf.float32, tf.float64],
+    ).converted_model
+    keras_output = np.array(keras_model([input_np, target_np]))
+
+    assert np.allclose(ort_output, keras_output, atol=1e-5), \
+        f"Value mismatch: ort={ort_output}, keras={keras_output}"
+    assert keras_output.dtype == np.float64, \
+        f"Dtype mismatch: expected float64, got {keras_output.dtype}"
