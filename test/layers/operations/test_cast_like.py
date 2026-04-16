@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import tensorflow as tf
 from onnx import helper, TensorProto, numpy_helper
 import onnxruntime as rt
 
@@ -10,6 +11,13 @@ ONNX_TO_NP = {
     TensorProto.DOUBLE: np.float64,
     TensorProto.INT32:  np.int32,
     TensorProto.INT64:  np.int64,
+}
+
+ONNX_TO_TF = {
+    TensorProto.FLOAT:  tf.float32,
+    TensorProto.DOUBLE: tf.float64,
+    TensorProto.INT32:  tf.int32,
+    TensorProto.INT64:  tf.int64,
 }
 
 
@@ -60,8 +68,8 @@ def test_cast_like(input_type, target_type):
     sess = rt.InferenceSession(onnx_model.SerializeToString())
     ort_output = sess.run(["output"], {"input": input_np})[0]
 
-    # Converted Keras model output
-    keras_model = onnx_to_keras(onnx_model, ["input"]).converted_model
+    # Converted Keras model output — pass input_types so non-float inputs keep their dtype
+    keras_model = onnx_to_keras(onnx_model, ["input"], input_types=[ONNX_TO_TF[input_type]]).converted_model
     keras_output = np.array(keras_model(input_np))
 
     # Values must match

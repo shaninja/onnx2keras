@@ -364,6 +364,20 @@ def convert_split(node, params, layers, lambda_func, node_name, keras_names):
         cur += split
 
 
+def _same_dtype_precast(input_0, target_dtype, cleaned_name):
+    """
+    When casting a Keras symbolic tensor to its own dtype, TF creates a broken
+    placeholder:0 tensor. Work around by up-casting to float64 first, so the
+    subsequent cast is never a no-op.  Raises if the tensor is already float64.
+    """
+    if input_0.dtype == target_dtype and not isinstance(input_0, (tf.Tensor, np.ndarray)):
+        if input_0.dtype != tf.double:
+            input_0 = tf_cast(input_0, tf.double, tf_name=f"{cleaned_name}_precast")
+        else:
+            raise NotImplementedError("Cast does not support tf.double casting into itself")
+    return input_0
+
+
 def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
     """
     Convert Cast layer
@@ -414,17 +428,7 @@ def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
             10: tf.float16,
             11: tf.double,
         }
-        if input_0.dtype == check_cast_map[params['to']] and not isinstance(input_0, (tf.Tensor, np.ndarray)):
-            # casting a tensor to the same dtype create placeholder:0 tensor which does not process well in engine
-            # trying to ignore the conversion (since its identity) might result in wrong types due to the way
-            # keras changes types on serialization and deserialization.
-            # So we up-cast to the most informative type then downcast.
-            # I'm Sorry.
-            if input_0.dtype != tf.double:
-                input_0 = tf_cast(input_0, tf.double, tf_name=f"{params['cleaned_name']}_precast")
-            else:
-                # We can add an If operation to the graph here if needed
-                raise NotImplementedError("Does not support tf.double casting into itself")
+        input_0 = _same_dtype_precast(input_0, check_cast_map[params['to']], params['cleaned_name'])
 
         def target_layer(x, dtype=params['to'], k_name=f"{params['cleaned_name']}"):
             import tensorflow as tf
@@ -472,13 +476,7 @@ def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
         layers[node_name] = input_0.astype(target_dtype.as_numpy_dtype)
     else:
         input_0 = ensure_tf_type(input_0, name="%s_const" % keras_name)
-        if input_0.dtype == target_dtype and not isinstance(input_0, (tf.Tensor, np.ndarray)):
-            # casting a tensor to the same dtype creates a placeholder:0 tensor which does not process well in engine
-            # (same workaround as convert_cast)
-            if input_0.dtype != tf.double:
-                input_0 = tf_cast(input_0, tf.double, tf_name=f"{params['cleaned_name']}_precast")
-            else:
-                raise NotImplementedError("CastLike does not support tf.double casting into itself")
+        input_0 = _same_dtype_precast(input_0, target_dtype, params['cleaned_name'])
         layers[node_name] = tf_cast(input_0, target_dtype, tf_name=f"{params['cleaned_name']}_cast_like")
 
 
