@@ -53,13 +53,17 @@ def test_f_softmax(change_ordering, dim):
     error = convert_and_test(model, input_np, verbose=False, change_ordering=change_ordering)
 
 
-def test_softmax_high_rank():
-    """Softmax on rank-7 input: keras.layers.Softmax and tf.nn.softmax both delegate to the
-    TF Softmax op which is limited to rank<=5 in TF 2.12. Shape matches the RAFT regression."""
+@pytest.mark.parametrize("axis", [-1, 1, 3])
+def test_softmax_high_rank(axis):
+    """Softmax on rank-7 input for multiple axes.
+
+    keras.layers.Softmax and tf.nn.softmax both delegate to the TF Softmax op
+    which is limited to rank<=5 in TF 2.12. The manual fallback must handle
+    any axis, not just -1. Shape matches the RAFT regression case."""
     shape = [1, 1, 9, 8, 8, 55, 128]
-    node = helper.make_node("Softmax", inputs=["x"], outputs=["y"], axis=-1)
+    node = helper.make_node("Softmax", inputs=["x"], outputs=["y"], axis=axis)
     graph = helper.make_graph(
-        [node], "test-softmax-6d",
+        [node], "test-softmax-7d",
         inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, shape)],
         outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, shape)],
     )
