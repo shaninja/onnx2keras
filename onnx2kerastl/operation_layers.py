@@ -364,6 +364,21 @@ def convert_split(node, params, layers, lambda_func, node_name, keras_names):
         cur += split
 
 
+def _cast_symbolic_tensor(input_0, target_dtype, tf_name):
+    """
+    Cast a Keras symbolic tensor to target_dtype.
+
+    tf.cast(x, x.dtype) on a Keras symbolic tensor creates a broken placeholder:0 node
+    that the engine cannot process.  When the dtypes already match, use tf.identity
+    instead — it is semantically correct (ONNX defines same-dtype cast as a no-op) and
+    works for all dtypes including int64 and float64, which the previous float64-upcast
+    workaround corrupted or rejected.
+    """
+    if not isinstance(input_0, (tf.Tensor, np.ndarray)) and input_0.dtype == target_dtype:
+        return tf.identity(input_0)
+    return tf_cast(input_0, target_dtype, tf_name=tf_name)
+
+
 def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
     """
     Convert Cast layer
@@ -414,34 +429,144 @@ def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
             10: tf.float16,
             11: tf.double,
         }
-        if input_0.dtype == check_cast_map[params['to']] and not isinstance(input_0, (tf.Tensor, np.ndarray)):
-            # casting a tensor to the same dtype create placeholder:0 tensor which does not process well in engine
-            # trying to ignore the conversion (since its identity) might result in wrong types due to the way
-            # keras changes types on serialization and deserialization.
-            # So we up-cast to the most informative type then downcast.
-            # I'm Sorry.
-            if input_0.dtype != tf.double:
-                input_0 = tf_cast(input_0, tf.double, tf_name=f"{params['cleaned_name']}_precast")
+        layers[node_name] = _cast_symbolic_tensor(
+            input_0, check_cast_map[params['to']], f"{params['cleaned_name']}_cast"
+        )
+
+
+def _parse_wide_int_numpy(arr, np_dtype):
+    """Exact string→int64/uint64 parse, matching ORT's stoll/stoull semantics.
+    Used where float64 would lose precision (|n| > 2**53).  Decimal strings
+    truncate toward zero; out-of-range values wrap mod 2**64 for uint64 and
+    overflow-wrap to int64, matching C++ integer conversion."""
+    flat = arr.ravel()
+    result = np.empty(flat.shape, dtype=np_dtype)
+    is_unsigned = np_dtype == np.uint64
+    for i, s in enumerate(flat):
+        if isinstance(s, bytes):
+            s = s.decode('utf-8')
+        try:
+            val = int(s)
+        except ValueError:
+            val = int(float(s))
+        if is_unsigned:
+            val &= (1 << 64) - 1
+        else:
+            val = ((val + (1 << 63)) & ((1 << 64) - 1)) - (1 << 63)
+        result[i] = val
+    return result.reshape(arr.shape)
+
+
+def _parse_int64_numpy(arr):
+    return _parse_wide_int_numpy(arr, np.int64)
+
+
+def _parse_uint64_numpy(arr):
+    return _parse_wide_int_numpy(arr, np.uint64)
+
+
+def _string_to_number_tensor(x, target_dtype):
+    """Cast a tf.string tensor to a numeric target_dtype.
+
+    tf.strings.to_number only supports out_type in {float32, float64, int32,
+    int64} and rejects decimal strings for integer out_types.  ONNX Runtime
+    accepts decimal strings for all numeric targets and truncates toward zero
+    when casting to integers, so non-float targets route through a float
+    intermediate.  int64 and uint64 are special: float64 parsing loses precision
+    for |n| > 2**53, so those use tf.numpy_function with Python int() to cover
+    the full legal integer range exactly.
+    """
+    if target_dtype in (tf.float32, tf.float64):
+        return tf.strings.to_number(x, out_type=target_dtype)
+    if target_dtype in (tf.float16, tf.bfloat16):
+        return tf.cast(tf.strings.to_number(x, out_type=tf.float32), target_dtype)
+    if target_dtype == tf.bool:
+        # Match ORT, which parses strings for bool via std::stoull: decimals like
+        # "0.5" become 0 (and thus False), not True.  Route through int64 cast so
+        # "0.5" truncates to 0 before the != 0 check.
+        as_int = tf.cast(tf.strings.to_number(x, out_type=tf.float64), tf.int64)
+        return tf.not_equal(as_int, tf.constant(0, dtype=tf.int64))
+    if target_dtype in (tf.int64, tf.uint64):
+        parser = _parse_uint64_numpy if target_dtype == tf.uint64 else _parse_int64_numpy
+        result = tf.numpy_function(parser, [x], target_dtype)
+        result.set_shape(x.shape)
+        return result
+    if target_dtype.is_integer:
+        # Narrow ints (<= 32 bit) fit exactly in float64, so a float intermediate
+        # is both faster than tf.numpy_function and lossless here.
+        return tf.cast(tf.strings.to_number(x, out_type=tf.float64), target_dtype)
+    raise NotImplementedError(
+        f"CastLike: string to {target_dtype} is not supported by this converter"
+    )
+
+
+def _numpy_string_to_numeric(arr, target_dtype):
+    """NumPy string→numeric parse matching ORT: decimal strings are accepted
+    for integer targets, and bool uses numeric-nonzero semantics (not NumPy
+    truthiness, which would make any non-empty string True)."""
+    np_dtype = target_dtype.as_numpy_dtype
+    if target_dtype == tf.bool:
+        # Match the tensor path / ORT: truncate toward zero then compare to 0.
+        return arr.astype(np.float64).astype(np.int64) != 0
+    if target_dtype == tf.uint64:
+        return _parse_uint64_numpy(arr)
+    if target_dtype == tf.int64:
+        return _parse_int64_numpy(arr)
+    if target_dtype.is_integer:
+        return arr.astype(np.float64).astype(np_dtype)
+    if target_dtype in (tf.float16, tf.bfloat16):
+        return arr.astype(np.float32).astype(np_dtype)
+    return arr.astype(np_dtype)
+
+
+def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
+    """
+    Convert CastLike layer — casts input to the dtype of the target tensor
+    :param node: current operation node
+    :param params: operation attributes
+    :param layers: available keras layers
+    :param lambda_func: function for keras Lambda layer
+    :param node_name: internal converter name
+    :param keras_name: resulting layer name
+    :return: None
+    """
+    logger = logging.getLogger('onnx2keras.cast_like')
+
+    input_0 = layers[node.input[0]]
+    target = layers[node.input[1]]
+
+    if is_numpy(target):
+        target_dtype = tf.as_dtype(target.dtype)
+    else:
+        target = ensure_tf_type(target, name="%s_target_const" % keras_name)
+        target_dtype = target.dtype
+
+    logger.debug('CastLike: casting to dtype %s', target_dtype)
+
+    if is_numpy(input_0):
+        input_is_string = input_0.dtype.kind in ('O', 'U', 'S')
+        if target_dtype == tf.string:
+            if input_is_string:
+                layers[node_name] = input_0
             else:
-                # We can add an If operation to the graph here if needed
-                raise NotImplementedError("Does not support tf.double casting into itself")
-
-        def target_layer(x, dtype=params['to'], k_name=f"{params['cleaned_name']}"):
-            import tensorflow as tf
-            cast_map = {
-                1: tf.float32,
-                2: tf.uint8,
-                3: tf.int8,
-                5: tf.int16,
-                6: tf.int32,
-                7: tf.int64,
-                9: tf.bool,
-                10: tf.float16,
-                11: tf.double,
-            }
-            return tf_cast(x, cast_map[dtype], tf_name=f'{k_name}_cast')
-
-        layers[node_name] = target_layer(input_0)
+                layers[node_name] = input_0.astype(str).astype(object)
+        elif input_is_string:
+            layers[node_name] = _numpy_string_to_numeric(input_0, target_dtype)
+        else:
+            layers[node_name] = input_0.astype(target_dtype.as_numpy_dtype)
+    else:
+        input_0 = ensure_tf_type(input_0, name="%s_const" % keras_name)
+        if target_dtype == tf.string:
+            if input_0.dtype == tf.string:
+                layers[node_name] = tf.identity(input_0)
+            else:
+                layers[node_name] = tf.strings.as_string(input_0)
+        elif input_0.dtype == tf.string:
+            layers[node_name] = _string_to_number_tensor(input_0, target_dtype)
+        else:
+            layers[node_name] = _cast_symbolic_tensor(
+                input_0, target_dtype, f"{params['cleaned_name']}_cast_like"
+            )
 
 
 def convert_floor(node, params, layers, lambda_func, node_name, keras_name):

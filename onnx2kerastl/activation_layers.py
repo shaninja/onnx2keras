@@ -238,7 +238,19 @@ def convert_softmax(node, params, layers, lambda_func, node_name, keras_name):
 
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
     axis = params.get('axis', keras.layers.Softmax.__init__.__defaults__[0])
-    softmax_layer = keras.layers.Softmax(axis=axis, name=f"{params['cleaned_name']}_softmax")
+    if input_0.shape.rank is not None and input_0.shape.rank > 5:
+        # keras.layers.Softmax and tf.nn.softmax both delegate to the TF Softmax op,
+        # which is limited to rank <=5 in TF 2.12. Use a manual numerically-stable
+        # implementation built from reduce_max / exp / reduce_sum, which have no rank limit.
+        def target_layer(x, ax=axis):
+            import tensorflow as tf
+            x_max = tf.reduce_max(x, axis=ax, keepdims=True)
+            e_x = tf.exp(x - x_max)
+            return e_x / tf.reduce_sum(e_x, axis=ax, keepdims=True)
+        softmax_layer = keras.layers.Lambda(target_layer, name=f"{params['cleaned_name']}_softmax")
+        lambda_func[keras_name] = target_layer
+    else:
+        softmax_layer = keras.layers.Softmax(axis=axis, name=f"{params['cleaned_name']}_softmax")
     layers[node_name] = softmax_layer(input_0)
     layers[node_name].set_shape(layers[node_name].shape)
 
