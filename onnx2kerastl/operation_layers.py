@@ -459,12 +459,23 @@ def convert_cast_like(node, params, layers, lambda_func, node_name, keras_name):
     logger.debug('CastLike: casting to dtype %s', target_dtype)
 
     if is_numpy(input_0):
-        layers[node_name] = input_0.astype(target_dtype.as_numpy_dtype)
+        if target_dtype == tf.string:
+            layers[node_name] = input_0.astype(str).astype(object)
+        else:
+            layers[node_name] = input_0.astype(target_dtype.as_numpy_dtype)
     else:
         input_0 = ensure_tf_type(input_0, name="%s_const" % keras_name)
-        layers[node_name] = _cast_symbolic_tensor(
-            input_0, target_dtype, f"{params['cleaned_name']}_cast_like"
-        )
+        if target_dtype == tf.string:
+            if input_0.dtype == tf.string:
+                layers[node_name] = tf.identity(input_0)
+            else:
+                layers[node_name] = tf.strings.as_string(input_0)
+        elif input_0.dtype == tf.string:
+            layers[node_name] = tf.strings.to_number(input_0, out_type=target_dtype)
+        else:
+            layers[node_name] = _cast_symbolic_tensor(
+                input_0, target_dtype, f"{params['cleaned_name']}_cast_like"
+            )
 
 
 def convert_floor(node, params, layers, lambda_func, node_name, keras_name):

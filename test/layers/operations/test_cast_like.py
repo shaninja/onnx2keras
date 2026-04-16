@@ -6,6 +6,8 @@ import onnxruntime as rt
 
 from onnx2kerastl import onnx_to_keras
 
+ONNX_STRING = TensorProto.STRING
+
 ONNX_TO_NP = {
     TensorProto.FLOAT:  np.float32,
     TensorProto.DOUBLE: np.float64,
@@ -117,3 +119,69 @@ def test_cast_like_dynamic_target():
         f"Value mismatch: ort={ort_output}, keras={keras_output}"
     assert keras_output.dtype == np.float64, \
         f"Dtype mismatch: expected float64, got {keras_output.dtype}"
+
+
+def test_cast_like_string_to_numeric():
+    """String numpy initializer cast to float32 — exercises the numpy string→numeric path."""
+    str_vals = np.array(['1.0', '2.5', '3.0', '4.5',
+                         '5.0', '6.5', '7.0', '8.5'], dtype=object).reshape(2, 4)
+    target_np = np.array([0.0], dtype=np.float32)
+
+    input_init  = numpy_helper.from_array(str_vals, name="input")
+    target_init = numpy_helper.from_array(target_np, name="target")
+
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-str-to-num",
+        inputs=[helper.make_tensor_value_info("input", ONNX_STRING, [2, 4])],
+        outputs=[helper.make_tensor_value_info("output", TensorProto.FLOAT, [2, 4])],
+        initializer=[input_init, target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": str_vals})[0]
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.string]).converted_model
+    keras_output = np.array(keras_model(str_vals))
+
+    assert np.allclose(ort_output, keras_output, atol=1e-5), \
+        f"Value mismatch: ort={ort_output}, keras={keras_output}"
+    assert keras_output.dtype == np.float32, \
+        f"Dtype mismatch: expected float32, got {keras_output.dtype}"
+
+
+def test_cast_like_numeric_to_string():
+    """Float32 dynamic input cast to string — exercises the tensor numeric→string path."""
+    target_np = np.array([b''], dtype=object)
+    target_init = numpy_helper.from_array(target_np, name="target")
+
+    node = helper.make_node("CastLike", inputs=["input", "target"], outputs=["output"])
+    graph = helper.make_graph(
+        [node], "test-castlike-num-to-str",
+        inputs=[helper.make_tensor_value_info("input", TensorProto.FLOAT, [2, 3])],
+        outputs=[helper.make_tensor_value_info("output", ONNX_STRING, [2, 3])],
+        initializer=[target_init],
+    )
+    onnx_model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 15)])
+
+    input_np = np.array([[1.0, 2.5, 3.0], [4.0, 5.5, 6.0]], dtype=np.float32)
+
+    sess = rt.InferenceSession(onnx_model.SerializeToString())
+    ort_output = sess.run(["output"], {"input": input_np})[0]
+
+    keras_model = onnx_to_keras(onnx_model, ["input"],
+                                input_types=[tf.float32]).converted_model
+    keras_output = keras_model(input_np).numpy()
+
+    assert ort_output.shape == keras_output.shape, \
+        f"Shape mismatch: ort={ort_output.shape}, keras={keras_output.shape}"
+    # The ONNX spec does not mandate an exact string format for float→string casts
+    # (e.g. ORT produces '1' while TF produces '1.000000').  Verify round-trip numeric
+    # equality: both strings must parse back to the same float value.
+    for orig, ort_val, keras_val in zip(input_np.flat, ort_output.flat, keras_output.flat):
+        ort_f = float(ort_val.decode() if isinstance(ort_val, bytes) else ort_val)
+        keras_f = float(keras_val.decode() if isinstance(keras_val, bytes) else keras_val)
+        assert np.isclose(ort_f, keras_f, atol=1e-5), \
+            f"Numeric mismatch after string parse: orig={orig}, ort={ort_f}, keras={keras_f}"
