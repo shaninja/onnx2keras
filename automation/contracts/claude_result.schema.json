@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ClaudeResult",
+  "type": "object",
+  "required": [
+    "status",
+    "summary",
+    "tests_run",
+    "tests_passed",
+    "files_changed",
+    "notes_for_reviewer",
+    "blocking_reason"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["needs_review", "blocked", "failed"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "tests_run": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "tests_passed": {
+      "type": "boolean"
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "notes_for_reviewer": {
+      "type": "string"
+    },
+    "blocking_reason": {
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": false
+}

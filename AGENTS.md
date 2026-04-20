@@ -159,6 +159,17 @@ git checkout -b add/new-op
 
 ---
 
+## Op Manager Automation
+
+The scripted op-manager work lives under `automation/`.
+- Design spec: `docs/superpowers/specs/2026-04-17-op-manager-v1-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-04-17-op-manager-v1.md`
+- Usage and current limitations: `automation/README.md`
+
+Current implementation status: skeleton only. It can create and inspect persisted run records, validate Claude/Codex JSON contract shapes, and construct fork-safe PR arguments. It does not yet invoke Claude/Codex, create worktrees, commit/push, open PRs, poll CI, or loop on CI failures.
+
+---
+
 ## Code Review Workflow
 
 When the user asks for a review, default to a multi-agent review and then consolidate the results into one final review.

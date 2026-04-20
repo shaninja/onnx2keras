@@ -16,3 +16,5 @@ test/models/custom_conversion_tests
 .vscode/
 gallery_models
 .DS_Store
+automation/runs/*
+!automation/runs/.gitkeep
